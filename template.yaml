@@ -1,0 +1,102 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: Serverless Full-text-search
+
+Parameters:
+  Name:
+    Type: String
+    Default: full-text-search
+  Env:
+    Type: String
+    Default: develop
+
+Globals:
+  Function:
+    Runtime: python3.8
+    MemorySize: 256
+    Timeout: 60
+    Environment:
+      Variables:
+        TZ: Asia/Tokyo
+        Name: !Ref Name
+        Env: !Ref Env
+    Tags:
+      Name: !Ref Name
+      Env: !Ref Env
+
+Resources:
+  DetectDocument:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub ${Name}-${Env}-func-detect-document
+      CodeUri: detect_document/
+      Handler: app.detect_document
+      Policies:
+        - S3ReadPolicy:
+            BucketName: !Sub ${Name}-${Env}-store
+        - SSMParameterReadPolicy:
+            ParameterName: '*'
+        - DynamoDBCrudPolicy:
+            TableName: !Ref DynamodbTable
+      Environment:
+        Variables:
+          DYNAMODB_TABLE: !Ref DynamodbTable
+          GOOGLE_APPLICATION_CREDENTIALS: /tmp/credentials.json
+          SSM_KEY: !Sub /${Name}/${Env}/credentials
+    DependsOn:
+      - DynamodbTable
+
+  DetectDocumentPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !GetAtt DetectDocument.Arn
+      Action: lambda:InvokeFunction
+      Principal: s3.amazonaws.com
+      SourceAccount: !Ref 'AWS::AccountId'
+      SourceArn: !Sub arn:aws:s3:::${Name}-${Env}-store
+    DependsOn:
+      - DetectDocument
+
+  DetectDocumentLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/lambda/${DetectDocument}
+      RetentionInDays: 90
+
+  S3Store:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub ${Name}-${Env}-store
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      LifecycleConfiguration:
+        Rules:
+          - Status: Enabled
+            NoncurrentVersionExpirationInDays: 30
+      VersioningConfiguration:
+        Status: Enabled
+      NotificationConfiguration:
+        LambdaConfigurations:
+          - Event: s3:ObjectCreated:*
+            Function: !GetAtt DetectDocument.Arn
+    DependsOn:
+      - DetectDocument
+      - DetectDocumentPermission
+
+  DynamodbTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub ${Name}-${Env}-table
+      AttributeDefinitions:
+        - AttributeName: word
+          AttributeType: S
+        - AttributeName: object_key
+          AttributeType: S
+      KeySchema:
+        - AttributeName: word
+          KeyType: HASH
+        - AttributeName: object_key
+          KeyType: RANGE
+      BillingMode: PAY_PER_REQUEST

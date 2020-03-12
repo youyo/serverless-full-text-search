@@ -1,0 +1,3 @@
+boto3
+jeffy
+google-cloud-vision
